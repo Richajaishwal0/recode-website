@@ -8,13 +8,13 @@ interface Contributor {
   avatar_url: string;
   contributions: number;
   html_url: string;
-  lastActivity: string;
+  lastActivity: number; // Changed to timestamp
 }
 
 interface ContributorActivity {
   contributor: Contributor;
   action: 'checked-in' | 'contributed' | 'starred' | 'forked';
-  timeAgo: string;
+  timestamp: number; // Changed to timestamp
 }
 
 interface FloatingContributorsProps {
@@ -27,83 +27,30 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
   const [currentActivityIndex, setCurrentActivityIndex] = useState(0);
   const [isVisible, setIsVisible] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [retryCount, setRetryCount] = useState(0);
 
 
 
-  // Initialize with fallback data immediately to ensure toaster always appears
+  // Fetch live contributor data
   useEffect(() => {
-    // Set fallback data immediately
-    const initializeFallbackData = () => {
-      const demoContributors: Contributor[] = [
-        {
-          id: '1',
-          login: 'sanjay-kv',
-          avatar_url: 'https://avatars.githubusercontent.com/u/30715153?v=4',
-          contributions: 127,
-          html_url: 'https://github.com/sanjay-kv',
-          lastActivity: '2 minutes ago',
-        },
-        {
-          id: '2',
-          login: 'recodehive-team',
-          avatar_url: 'https://avatars.githubusercontent.com/u/150000000?v=4',
-          contributions: 89,
-          html_url: 'https://github.com/recodehive',
-          lastActivity: '5 minutes ago',
-        },
-        {
-          id: '3',
-          login: 'contributor-1',
-          avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4',
-          contributions: 64,
-          html_url: 'https://github.com/contributor-1',
-          lastActivity: '12 minutes ago',
-        },
-        {
-          id: '4',
-          login: 'contributor-2',
-          avatar_url: 'https://avatars.githubusercontent.com/u/2?v=4',
-          contributions: 45,
-          html_url: 'https://github.com/contributor-2',
-          lastActivity: '1 hour ago',
-        },
-        {
-          id: '5',
-          login: 'contributor-3',
-          avatar_url: 'https://avatars.githubusercontent.com/u/3?v=4',
-          contributions: 32,
-          html_url: 'https://github.com/contributor-3',
-          lastActivity: '3 hours ago',
-        },
-      ];
-
-      setContributors(demoContributors);
-      setActivities(demoContributors.map(contributor => ({
-        contributor,
-        action: getRandomAction(),
-        timeAgo: contributor.lastActivity,
-      })));
-      setLoading(false);
-    };
-
-    // Initialize with fallback data immediately
-    initializeFallbackData();
-
-    // Then try to fetch real data
-    const fetchContributors = async () => {
+    const fetchLiveContributors = async () => {
       try {
-
+        setLoading(true);
+        
         // Fetch repositories from RecodeHive organization
-        const reposResponse = await fetch('https://api.github.com/orgs/recodehive/repos?type=public&per_page=10&sort=updated');
+        const reposResponse = await fetch('https://api.github.com/orgs/recodehive/repos?type=public&per_page=15&sort=updated', {
+          headers: {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'RecodeHive-Toaster/1.0'
+          }
+        });
 
-        // Check if the response is ok
         if (!reposResponse.ok) {
-          console.warn(`GitHub API rate limit or error: ${reposResponse.status}`);
           throw new Error(`GitHub API error: ${reposResponse.status}`);
         }
 
         const repos = await reposResponse.json();
-
         if (!Array.isArray(repos)) {
           throw new Error('Invalid repos response');
         }
@@ -111,9 +58,17 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
         // Collect contributors from multiple repositories
         const contributorsMap = new Map<string, Contributor>();
         
-        for (const repo of repos.slice(0, 5)) { // Limit to top 5 repos for performance
+        // Process top repositories to get live contributor data
+        for (const repo of repos.slice(0, 8)) {
           try {
-            const contributorsResponse = await fetch(`https://api.github.com/repos/${repo.full_name}/contributors?per_page=20`);
+            await new Promise(resolve => setTimeout(resolve, 100)); // Rate limit protection
+            
+            const contributorsResponse = await fetch(`https://api.github.com/repos/${repo.full_name}/contributors?per_page=30`, {
+              headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'RecodeHive-Toaster/1.0'
+              }
+            });
             
             if (contributorsResponse.ok) {
               const repoContributors = await contributorsResponse.json();
@@ -131,7 +86,7 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
                         avatar_url: contributor.avatar_url,
                         contributions: contributor.contributions,
                         html_url: contributor.html_url,
-                        lastActivity: generateRandomTimeAgo(),
+                        lastActivity: generateRandomTimestamp(),
                       });
                     }
                   }
@@ -143,32 +98,55 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
           }
         }
 
-        const contributorsList = Array.from(contributorsMap.values())
+        const liveContributors = Array.from(contributorsMap.values())
           .sort((a, b) => b.contributions - a.contributions)
-          .slice(0, 12); // Top 12 contributors
+          .slice(0, 15);
 
-        // Only update if we got real data
-        if (contributorsList.length > 0) {
-          setContributors(contributorsList);
-
-          // Generate activities
-          const generatedActivities: ContributorActivity[] = contributorsList.map(contributor => ({
+        if (liveContributors.length > 0) {
+          setContributors(liveContributors);
+          setActivities(liveContributors.map(contributor => ({
             contributor,
             action: getRandomAction(),
-            timeAgo: generateRandomTimeAgo(),
-          }));
-
-          setActivities(generatedActivities);
+            timestamp: contributor.lastActivity,
+          })));
+          setRetryCount(0);
+        } else {
+          throw new Error('No contributors found');
         }
         
       } catch (error) {
-        // Silently handle GitHub API errors (rate limits, etc.)
-        console.warn('Using fallback contributor data due to GitHub API limitations');
-        // Fallback data is already initialized, so no need to set it again
+        console.error('Failed to fetch live contributors:', error);
+        
+        // Retry logic for live data
+        if (retryCount < 3) {
+          setTimeout(() => {
+            setRetryCount(prev => prev + 1);
+          }, 5000 * (retryCount + 1)); // Exponential backoff
+        }
+      } finally {
+        setLoading(false);
       }
     };
 
-    fetchContributors();
+    fetchLiveContributors();
+  }, [retryCount]);
+
+  // Refresh live data periodically
+  useEffect(() => {
+    const refreshInterval = setInterval(() => {
+      setRetryCount(0); // Trigger refresh
+    }, 5 * 60 * 1000); // Refresh every 5 minutes
+
+    return () => clearInterval(refreshInterval);
+  }, []);
+
+  // Update current time every minute for live timestamps
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 60000); // Update every minute
+
+    return () => clearInterval(interval);
   }, []);
 
   // Cycle through activities
@@ -183,19 +161,43 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
   }, [activities.length]);
 
 
-  const generateRandomTimeAgo = (): string => {
-    const timeOptions = [
-      'a few seconds ago',
-      '2 minutes ago',
-      '5 minutes ago',
-      '10 minutes ago',
-      '30 minutes ago',
-      '1 hour ago',
-      '2 hours ago',
-      'a day ago',
-      '2 days ago',
+  const generateRandomTimestamp = (): number => {
+    const now = Date.now();
+    const timeOffsets = [
+      30 * 1000,        // 30 seconds ago
+      2 * 60 * 1000,    // 2 minutes ago
+      5 * 60 * 1000,    // 5 minutes ago
+      10 * 60 * 1000,   // 10 minutes ago
+      30 * 60 * 1000,   // 30 minutes ago
+      60 * 60 * 1000,   // 1 hour ago
+      2 * 60 * 60 * 1000, // 2 hours ago
+      24 * 60 * 60 * 1000, // 1 day ago
+      2 * 24 * 60 * 60 * 1000, // 2 days ago
     ];
-    return timeOptions[Math.floor(Math.random() * timeOptions.length)];
+    const randomOffset = timeOffsets[Math.floor(Math.random() * timeOffsets.length)];
+    return now - randomOffset;
+  };
+
+  const formatTimeAgo = (timestamp: number): string => {
+    const now = currentTime;
+    const diffInSeconds = Math.floor((now - timestamp) / 1000);
+    
+    if (diffInSeconds < 60) {
+      return diffInSeconds <= 30 ? 'just now' : `${diffInSeconds} seconds ago`;
+    }
+    
+    const diffInMinutes = Math.floor(diffInSeconds / 60);
+    if (diffInMinutes < 60) {
+      return diffInMinutes === 1 ? '1 minute ago' : `${diffInMinutes} minutes ago`;
+    }
+    
+    const diffInHours = Math.floor(diffInMinutes / 60);
+    if (diffInHours < 24) {
+      return diffInHours === 1 ? '1 hour ago' : `${diffInHours} hours ago`;
+    }
+    
+    const diffInDays = Math.floor(diffInHours / 24);
+    return diffInDays === 1 ? '1 day ago' : `${diffInDays} days ago`;
   };
 
   const getRandomAction = (): ContributorActivity['action'] => {
@@ -223,7 +225,22 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
     }
   };
 
-  if (loading || activities.length === 0) {
+  if (loading) {
+    return (
+      <div className="floating-contributors-container header-embedded">
+        <div className="floating-contributors-card">
+          <div className="floating-contributors-header">
+            <div className="floating-contributors-title">
+              <span className="title-icon">👥</span>
+              <span>Loading Live Data...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (activities.length === 0) {
     return null;
   }
 
@@ -309,7 +326,7 @@ const FloatingContributors: React.FC<FloatingContributorsProps> = ({ headerEmbed
                       {getActionText(currentActivity.action)}
                     </span>
                   </div>
-                  <div className="activity-time">{currentActivity.timeAgo}</div>
+                  <div className="activity-time">{formatTimeAgo(currentActivity.timestamp)}</div>
                 </div>
               </motion.div>
             </AnimatePresence>
